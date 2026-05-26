@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Coverlet settings for the eShopOnWeb sandbox.
+
+  The default coverage run includes every assembly loaded during test execution,
+  which inflates the denominator with:
+    - EF Core migration files  (hundreds of generated .cs files, never called in tests)
+    - EF model snapshots       (auto-generated, not hand-written logic)
+    - Auto-generated designers and scaffolding
+
+  These exclusions give a coverage % that reflects the hand-written application
+  code actually under test, rather than a meaningless ratio dominated by
+  generated files.
+
+  Even after exclusions, eShopOnWeb's coverage will be genuinely low (~30-40%).
+  The upstream test suite (54 tests) intentionally covers only the business layer
+  (ApplicationCore + Infrastructure). The Web layer (Razor Pages, controllers) is
+  largely untested because most FunctionalTests are commented out in the repo.
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat Code Coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+
+          <!-- Exclude EF Core migrations and model snapshots -->
+          <ExcludeByFile>
+            **/Migrations/*.cs,
+            **/Migrations/**/*.cs,
+            **/*ModelSnapshot.cs
+          </ExcludeByFile>
+
+          <!-- Exclude auto-generated and test assemblies from the denominator -->
+          <Exclude>
+            [*.Tests]*,
+            [*.UnitTests]*,
+            [*.IntegrationTests]*,
+            [*.FunctionalTests]*
+          </Exclude>
+
+          <!-- Only count hand-written application assemblies -->
+          <Include>
+            [Web]*,
+            [ApplicationCore]*,
+            [Infrastructure]*,
+            [PublicApi]*
+          </Include>
+
+          <SingleHit>false</SingleHit>
+          <UseSourceLink>true</UseSourceLink>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

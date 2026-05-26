@@ -1,0 +1,23 @@
+# Local Docker registry — drop-in replacement for ECR/GHCR during local development.
+#
+# Usage:
+#   ./sandbox.sh registry start   — bring up the registry
+#   ./sandbox.sh registry stop    — tear it down
+#   ./sandbox.sh registry ps      — check status
+#   ./sandbox.sh registry ls      — list pushed repositories
+#
+# Registry data persists in a named volume so images survive restarts.
+# Bound to 127.0.0.1 only — not reachable from outside the machine.
+services:
+  registry:
+    image: registry:2
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - registry-data:/var/lib/registry
+    restart: unless-stopped
+
+volumes:
+  registry-data:

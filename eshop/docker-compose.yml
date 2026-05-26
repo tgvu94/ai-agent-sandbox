@@ -1,0 +1,94 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      SA_PASSWORD: "@Sandbox1234!"
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+    healthcheck:
+      # -C = trust self-signed cert; sqlcmd path changed in mssql-tools18
+      test: >
+        /opt/mssql-tools18/bin/sqlcmd
+        -S localhost -U sa -P "$$SA_PASSWORD"
+        -Q "SELECT 1" -C -l 10
+        || /opt/mssql-tools/bin/sqlcmd
+        -S localhost -U sa -P "$$SA_PASSWORD"
+        -Q "SELECT 1" -l 10
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    networks:
+      - eshop-net
+    volumes:
+      - eshop-sqlserver-data:/var/opt/mssql
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  eshop-runner:
+    # CI_IMAGE: set to localhost:5000/eshop:ci-test to use a pre-built image
+    # (populated by `./sandbox.sh eshop build-image`). When unset, compose
+    # builds the toolchain target from the Dockerfile on demand.
+    image: ${CI_IMAGE:-eshop-runner-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: toolchain
+    environment:
+      # Connection strings match appsettings.Docker.json pattern
+      ASPNETCORE_ENVIRONMENT: Docker
+      ConnectionStrings__CatalogConnection: >-
+        Server=sqlserver,1433;
+        User Id=sa;Password=@Sandbox1234!;
+        Initial Catalog=Microsoft.eShopOnWeb.CatalogDb;
+        TrustServerCertificate=true;
+        Trusted_Connection=false;
+      ConnectionStrings__IdentityConnection: >-
+        Server=sqlserver,1433;
+        User Id=sa;Password=@Sandbox1234!;
+        Initial Catalog=Microsoft.eShopOnWeb.Identity;
+        TrustServerCertificate=true;
+        Trusted_Connection=false;
+      SANDBOX_MODE: "${SANDBOX_MODE:-test}"
+      SANDBOX_OUTPUT_DIR: /sandbox-output
+      # SKIP_BUILD=1 when CI_IMAGE is a pre-built ci-test image; tells the
+      # entrypoint to skip clone/restore/build and go straight to dotnet test.
+      SKIP_BUILD: "${SKIP_BUILD:-}"
+      # COLLECT_COVERAGE=1 adds --collect "XPlat Code Coverage" to dotnet test.
+      # Requires coverlet.collector in test projects. Off by default — coverage
+      # doubles test time and is unnecessary for fast agent iteration loops.
+      COLLECT_COVERAGE: "${COLLECT_COVERAGE:-}"
+      # If unset, the entrypoint clones from GitHub (demo mode).
+      # Set to a non-empty string to use a mounted /workspace instead.
+      USE_MOUNTED_WORKSPACE: "${USE_MOUNTED_WORKSPACE:-}"
+    # Note: tests use EF Core in-memory and don't need sqlserver.
+    # The depends_on is satisfied before the runner starts but sqlserver
+    # startup (~30s) is overlapped with image pull / git clone.
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    volumes:
+      # Persistent NuGet package cache — survives reset, speeds up repeated runs
+      - eshop-nuget-cache:/root/.nuget/packages
+      # Coverage settings — scopes Coverlet to hand-written app code only
+      - ./coverlet.runsettings:/sandbox/eshop/coverlet.runsettings:ro
+      # Ephemeral: mount your workspace here for agent mode
+      # docker compose run -v /path/to/repo:/workspace eshop-runner
+      - "${WORKSPACE_PATH:-/dev/null}:/workspace-host:ro"
+      # Structured output — host can read results after run
+      - sandbox-output:/sandbox-output
+    networks:
+      - eshop-net
+
+networks:
+  eshop-net:
+    driver: bridge
+
+volumes:
+  # App data — destroyed on `reset` to guarantee clean state
+  eshop-sqlserver-data:
+  # Dep cache — preserved across resets (expensive to rebuild)
+  eshop-nuget-cache:
+  sandbox-output:

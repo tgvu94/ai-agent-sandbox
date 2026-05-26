@@ -1,0 +1,108 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: medplum
+      POSTGRES_PASSWORD: medplum
+      POSTGRES_DB: medplum
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medplum -d medplum"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - medplum-net
+    volumes:
+      - medplum-postgres-data:/var/lib/postgresql/data
+      # Init script creates the test database used by `npm run test:seed`
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass medplum
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "medplum", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - medplum-net
+    volumes:
+      - medplum-redis-data:/data
+
+  medplum-runner:
+    # CI_IMAGE: set to localhost:5000/medplum:ci-test to use a pre-built image
+    # (populated by `./sandbox.sh medplum build-image`). When unset, compose
+    # builds the toolchain target from the Dockerfile on demand.
+    image: ${CI_IMAGE:-medplum-runner-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: toolchain
+    environment:
+      # Database
+      MEDPLUM_DATABASE_HOST: postgres
+      MEDPLUM_DATABASE_PORT: "5432"
+      MEDPLUM_DATABASE_DBNAME: medplum
+      MEDPLUM_DATABASE_USERNAME: medplum
+      MEDPLUM_DATABASE_PASSWORD: medplum
+      # Redis
+      MEDPLUM_REDIS_HOST: redis
+      MEDPLUM_REDIS_PORT: "6379"
+      MEDPLUM_REDIS_PASSWORD: medplum
+      # Server
+      MEDPLUM_PORT: "8103"
+      MEDPLUM_BASE_URL: "http://localhost:8103/"
+      MEDPLUM_STORAGE_BASE_URL: "http://localhost:8103/storage/"
+      MEDPLUM_BINARY_STORAGE: "file:./binary/"
+      MEDPLUM_ALLOWED_ORIGINS: "*"
+      MEDPLUM_MAX_JSON_SIZE: "1mb"
+      # Test-specific overrides — loadTestConfig() reads POSTGRES_HOST/PORT
+      # (not the MEDPLUM_DATABASE_* vars) so both sets are required
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      # Sandbox control
+      SANDBOX_MODE: "${SANDBOX_MODE:-build}"
+      SANDBOX_OUTPUT_DIR: /sandbox-output
+      # SKIP_BUILD=1 when CI_IMAGE is a pre-built ci-test image; tells the
+      # entrypoint to skip clone/install/build and go straight to seed+test.
+      SKIP_BUILD: "${SKIP_BUILD:-}"
+      # COLLECT_COVERAGE=1 adds --coverage to jest via turbo. Off by default —
+      # Istanbul instrumentation roughly doubles the ~9 min test run.
+      COLLECT_COVERAGE: "${COLLECT_COVERAGE:-}"
+      USE_MOUNTED_WORKSPACE: "${USE_MOUNTED_WORKSPACE:-}"
+      # Disable OTEL by default in sandbox — no collector running
+      OTEL_SDK_DISABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Persistent npm cache — survives reset, speeds up repeated builds
+      - medplum-npm-cache:/root/.npm
+      # Ephemeral: set WORKSPACE_PATH to mount agent workspace
+      - "${WORKSPACE_PATH:-/dev/null}:/workspace-host:ro"
+      - sandbox-output:/sandbox-output
+      # Config files — the server always loads medplum.config.json before applying env var overrides;
+      # test.config.json is loaded by src/index.test.ts via main('file:test.config.json')
+      - ./medplum.config.json:/sandbox/medplum.config.json:ro
+      - ./test.config.json:/sandbox/test.config.json:ro
+    ports:
+      - "8103:8103"
+    networks:
+      - medplum-net
+
+networks:
+  medplum-net:
+    driver: bridge
+
+volumes:
+  # App data — destroyed on `reset` for clean state
+  medplum-postgres-data:
+  medplum-redis-data:
+  # Dep cache — preserved across resets
+  medplum-npm-cache:
+  sandbox-output:
