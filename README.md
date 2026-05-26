@@ -2,6 +2,7 @@
 
 A Docker-based execution environment for AI coding agents. The agent clones a repository, makes changes to the code, then mounts the workspace into this sandbox to build, test, and validate output before a pull request is opened.
 
+Demo URL: https://drive.google.com/file/d/1r_N5TNf8dOTU5B7b_zwumTRfPvSclAqm/view?usp=drive_link
 ---
 
 ## Proof It Works and Performance
@@ -396,7 +397,7 @@ subsequent runs when lock files are unchanged.
 The Medplum build uses `--filter=@medplum/server` to build only the server and
 its workspace dependencies, skipping docs, examples, and all other packages.
 
-### What's not implemented (documented gaps)
+### What's not implemented
 
 **3. Turborepo remote cache — skip recompiling unchanged packages across machines**  
 Turborepo supports a content-addressed remote cache: if a package's inputs
