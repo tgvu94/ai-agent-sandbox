@@ -533,37 +533,10 @@ APP_VERSION=1.2.3 ./sandbox.sh eshop build-image
 #           localhost:5000/eshop:1.2.3-main-abcdef        (runtime, immutable dev build)
 
 # 3. Test — automatically resolves the right image from APP_VERSION + BRANCH + HEAD SHA
-APP_VERSION=1.2.3 ./sandbox.sh eshop test      # ~30 sec instead of ~8 min
-
-# 4. Promote to production registry (adds clean 1.2.3 + latest aliases)
-APP_VERSION=1.2.3 REGISTRY=123456789.dkr.ecr.us-east-1.amazonaws.com \
-  ./sandbox.sh eshop push
-# Only succeeds from the release branch (default: main).
-# Produces on ECR: 1.2.3-main-abcdef  (immutable)  ← use in ECS task definitions
-#                  1.2.3               (release alias, mutable)
-#                  latest              (convenience pointer, never use in infra)
+APP_VERSION=1.2.3 ./sandbox.sh eshop test
 
 ./sandbox.sh registry ls   # inspect local registry
 ```
-
-#### Tag lifecycle
-
-| Tag | When created | Mutable? | Use in infra? |
-|-----|-------------|----------|---------------|
-| `1.2.3-main-abcdef-test` | `build-image` | No | No — test runner only |
-| `1.2.3-main-abcdef` | `build-image` | No | **Yes** — reference this in ECS task definitions |
-| `1.2.3` | `push` (release branch only) | Yes\* | Read-only lookups ("what's in production?") |
-| `latest` | `push` (release branch only) | Yes | Never — too broad for infra |
-
-\* Enable ECR tag immutability so `1.2.3-main-abcdef` cannot be overwritten — this
-makes the version tag functionally equivalent to a digest without the extra complexity.
-
-#### How to tell dev from released
-
-- **Only `1.2.3-main-abcdef` exists** → built and tested, not yet promoted to production
-- **`1.2.3-main-abcdef` + `1.2.3` + `latest` all exist** → promoted release
-- **`APP_VERSION=0.0.0`** (the default) → local dev build; `push` refuses to promote it
-- **Feature branch builds** (`1.2.3-feat-xyz-abcdef`) → `push` blocks `:1.2.3` + `:latest` aliases; only `main` may promote
 
 ---
 
@@ -588,75 +561,6 @@ docker pull localhost:5000/medplum:0.0.0-main-abcdef-test  # warms deps cache
 WORKSPACE_PATH=/agent/workspace USE_MOUNTED_WORKSPACE=1 \
   ./sandbox.sh medplum test                                 # deps stage cache-hits
 ```
-
----
-
-### Decision: Runtime image integrity — closing the ci-test vs runtime gap
-
-**The problem:** `ci-test` runs tests in the full SDK/Node environment. `runtime`
-runs the compiled output in a stripped base. They share the exact same compiled
-binary (both `COPY --from=builder`), but the base image is different. What can
-silently fail in production but pass in tests:
-
-- A native `.so` present in the builder base but absent in Alpine or chiseled
-- An npm workspace symlink that resolves differently between Debian-slim and Alpine
-- A `COPY` instruction that missed a required file
-- File permissions that block reads under a non-root user
-
-**The fix — two layers:**
-
-1. **`HEALTHCHECK` on the runtime image** (Medplum)  
-   The Alpine image includes `wget`. The runtime image declares a `HEALTHCHECK`
-   that polls `/healthcheck` from inside the container. ECS and Kubernetes use
-   this to decide whether the container is ready to serve traffic.  
-   For eShopOnWeb's chiseled image (no shell, no tools), health probing is
-   handled externally — by the ECS target group HTTP probe or K8s `httpGet`
-   liveness probe.
-
-2. **Smoke test before push** (`build-image` command)  
-   After building the runtime image, `build-image` starts it against real
-   infrastructure, waits for the health endpoint to respond, verifies content on
-   key endpoints, and only pushes if all checks pass. A broken runtime image
-   never reaches the registry.
-
-**The flow:**
-```
-docker build runtime image
-       ↓
-smoke test: start infra (Postgres/Redis or SQL Server) + runtime container
-           → poll health endpoint (up to 150s, handles first-boot migrations)
-           → crash detected immediately via container state check
-           → content assertions on unauthenticated endpoints
-       ↓ (only if all pass)
-docker push runtime image
-       ↓
-IMAGE_VERSION tag (1.2.3-main-abcdef) is the artifact identity
-```
-
-**Smoke test checks:**
-
-| Check | eShopOnWeb | Medplum |
-|-------|-----------|---------|
-| Process started, port bound | `GET /` → 200 | `GET /healthcheck` → 200 |
-| DB connected + migrated | `/Catalog` contains catalog items | `"ok":true` in healthcheck |
-| App routing works | Page title matches `eShopOnWeb` | `GET /fhir/R4/metadata` → `CapabilityStatement` |
-| Auth subsystem initialised | — | `GET /.well-known/openid-configuration` → `"issuer"` |
-
-**Documented gap:**  
-The following require authenticated sessions or pre-seeded data and are not checked:
-
-- **eShopOnWeb**: login, add-to-cart, checkout flow; PublicApi REST endpoints
-- **Medplum**: authenticated FHIR operations (`POST /fhir/R4/Patient`, search,
-  subscriptions); JWT issuance and token validation flows
-
-The right long-term fix is a thin contract-test suite (a few POST/GET against
-known seed data) that runs after the smoke test using the runtime image.
-
-**Tag immutability instead of digest pinning:** `IMAGE_VERSION` already embeds
-semver + branch + git SHA — it's unique per commit, per branch. Enable ECR tag
-immutability on the repository so this tag cannot be overwritten after push.
-Infra code references `IMAGE_VERSION`; it's human-readable and still points to
-exactly one image.
 
 ---
 
